@@ -1,0 +1,34 @@
+# 只放工具配置，不打包发布。
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["runs", ".venv", "venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM"]
+ignore = [
+    "E741",   # 单字母变量名。数学公式里的 l/I 有时就是最清楚的写法
+    "B008",   # 默认参数里调函数。argparse 那一套写法会命中
+    "SIM108", # 强制三元表达式。多分支写成 if/else 更好读
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 提示词是喂给模型的字符串，一个字都不能动，更不能为了排版换行——
+# 换行会进入模型看到的文本，改变行为。
+"src/data/prompts.py" = ["E501"]
+"src/rewards/judge.py" = ["E501"]
+# 奖励插件被 ms-swift 按文件路径加载，必须先补 sys.path 再 import，模块级 import 不在顶部
+"src/rewards/grpo_reward.py" = ["E402"]
+# 入口脚本同理：先补 sys.path 才能 import src.*
+"scripts/*.py" = ["E402"]
+# 测试里要摸私有函数验聚合口径
+"tests/*.py" = ["SLF001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 三档验证口径，不许互相冒充：
+#   离线用例  手写输入手写期望，不连任何服务 —— 本目录全部属于这一档
+#   真机跑通  在有 GPU 和外部服务的机器上跑通一遍，不在本仓库里
+#   评测数据  冻结验收集上的三件套成绩单，由 scripts/evaluate.py 产出
+addopts = "-q"

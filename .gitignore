@@ -1,0 +1,62 @@
+# 产物类的目录一律用 `/` 开头锚在仓库根。
+# 不锚的话 `data/` 会把 `src/data/` 这种源码目录一起吞掉，而且吞得没有任何提示——
+# 文件就是不出现在 git status 里。
+
+# ---- 密钥与本地环境 ----
+.env
+.env.local
+*.key
+*.pem
+*.p12
+credentials.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+/build/
+/dist/
+.venv/
+venv/
+
+# ---- 训练产物：一律不入库 ----
+# runs/ 是配置里 work_dir 的默认值，下面挂着 output / ckpts / models / logs
+/runs/
+/outputs/
+/output/
+/checkpoints/
+/ckpts/
+/models/
+/logs/
+/wandb/
+
+# ---- 模型权重与 adapter ----
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+adapter_model.*
+adapter_config.json
+
+# ---- 数据：真实语料不入库，只留 examples/ 下的合成样例 ----
+/data/
+*.jsonl
+!examples/*.jsonl
+*.csv
+*.parquet
+*.xlsx
+
+# ---- 编辑器与系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

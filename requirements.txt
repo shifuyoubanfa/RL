@@ -1,0 +1,16 @@
+# 本文件只列**编排层和数据层**要用的轻依赖。
+#
+# 训练和推理的重依赖不在这里，理由是它们通常装在不同的环境里：
+#   训练环境   ms-swift（内含 torch / transformers / peft / trl / deepspeed）
+#   推理环境   vLLM
+# 把 vLLM 装进训练环境会和 torch 版本打架，所以两边分开建 conda 环境，
+# 用 SWIFT_BIN / VLLM_BIN 两个环境变量分别指过去（见 .env.example）。
+#
+# 只跑数据处理和评测的话，装本文件就够了，不需要 GPU。
+
+pyyaml>=6.0        # 读 configs/train.yaml
+requests>=2.31     # 推理服务和裁判服务的 HTTP 客户端
+
+# 开发和测试
+pytest>=7.4
+ruff>=0.4

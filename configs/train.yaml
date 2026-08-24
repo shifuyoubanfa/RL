@@ -1,0 +1,223 @@
+# ============================================================================
+# 全流程唯一配置文件。
+#
+# 数据构建、训练、评测三个入口都只读这一份，不再各自散落默认值。
+# 每一项都可以用环境变量覆盖，规则见 src/config.py 顶部的 `_ENV_OVERRIDES`：
+# 例如 `RL_WORK_DIR=/data/rl` 覆盖 paths.work_dir。
+#
+# 路径一律写成"占位符"，不是任何一台真机上的绝对路径。跑之前必须改 paths 段，
+# 或者用环境变量指过去。
+# ============================================================================
+
+paths:
+  # 产物根目录。下面四个子目录默认都挂在它下面。
+  work_dir: "./runs"
+  # 中间数据（jsonl）、评测报告
+  output_dir: "${work_dir}/output"
+  # LoRA adapter 落点
+  ckpt_dir: "${work_dir}/ckpts"
+  # 合并后的全量模型落点（每个约等于一份基座大小，磁盘要留够）
+  model_dir: "${work_dir}/models"
+  # 日志与断点状态
+  log_dir: "${work_dir}/logs"
+  # 原始语料：每行 {query, user_prompt}，user_prompt 里含【参考问答对】和【问题】两段
+  raw_corpus: "./data/raw_corpus.jsonl"
+
+model:
+  # 被强化的基座（一个 32B 规模的领域模型）。它同时是"答案金标准"的来源。
+  # 必须换成本机真实权重目录；目录里要有 config.json。
+  base_model: "/path/to/base-32b"
+  # ms-swift 用来挑模板的两个标识，跟基座的 chat 模板对齐
+  model_type: "qwen2"
+  template: "qwen2_5"
+
+# ---------------------------------------------------------------------------
+# 推理服务：数据构建、rollout 采样、评测推理都走这个 HTTP 端口，不在训练进程里加载权重
+# ---------------------------------------------------------------------------
+vllm:
+  base_url: "http://127.0.0.1:8000/v1"
+  # 默认请求的模型名，和 serve 时的 --served-model-name 对齐
+  served_model: "base"
+  # 一次请求的读超时（秒）。32B 长文本生成慢，给足
+  timeout: 600
+  # 客户端并发。vLLM 有连续批处理，并发高吞吐才上得去
+  call_workers: 32
+  # serve 时占多少显存比例。只服务推理时可以给高
+  serve_gpu_util: 0.90
+  # serve 时用哪几张卡（逗号分隔），张数即张量并行度
+  gpus: "0,1"
+  port: 8000
+
+# ---------------------------------------------------------------------------
+# 裁判模型：唯一由大模型判的东西是"换词复述照抄"，规则看不见它
+# ---------------------------------------------------------------------------
+judge:
+  # OpenAI 兼容端点。key 只从环境变量读，见 .env.example
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "kimi/kimi-k2.6"
+  api_key_env: "DASHSCOPE_API_KEY"
+  # 该裁判是 thinking 模型，默认正文全落 reasoning_content。关掉思考让 content 直接出结果
+  enable_thinking: false
+  # 判分要可复现，温度锁 0
+  temperature: 0.0
+  top_p: 0.7
+  timeout: 600
+  # 判分并发。该服务容易 429，宁慢勿被限流
+  call_workers: 3
+  # 429/5xx/超时的重试次数，指数退避封顶 30 秒
+  retries: 8
+  # 单次调用价（元/百万 token），只用来记账
+  price_in_per_million: 6.5
+  price_out_per_million: 27
+  # 累计花费围栏（元）。0 = 只记账不设上限；设成正数后超了就抛异常干净停
+  budget_yuan: 0
+  # 打分缓存只缓存 k >= 这个值的聚合分。k=2 的粗筛短命、候选各异，缓存了只会撑爆文件
+  cache_min_k: 16
+  # 判分提示词一旦改动就 bump 这个串，让旧缓存自然失效
+  cache_version: "judge_v1"
+
+# ---------------------------------------------------------------------------
+# 裁判标定表：先量尺子再优化。表里每一档是"照抄句数"，对应该档的分数均值和档内标准差
+# ---------------------------------------------------------------------------
+calibration:
+  # [干净分均值, 该档标准差]，由脏到干净。σ-可分门用它查表
+  tiers:
+    - [0.00, 0.00]   # 整段照抄
+    - [0.03, 0.06]   # 抄 4 句
+    - [1.84, 0.17]   # 抄 3 句
+    - [2.64, 0.60]   # 抄 2 句
+    - [4.64, 1.63]   # 抄 1 句
+    - [7.34, 1.85]   # 没抄
+  # 单遍打分自身的噪声。打 k 遍能压到 σ_judge/√k
+  sigma_judge: 0.74
+  # 样本之间的差异。这一项 k 压不掉，是整体评测标准误的下限
+  sigma_between: 1.02
+
+data:
+  # 冻结验收集条数（固定条数，不是比例）
+  n_eval: 500
+  # 切分随机种子。固定它，验收集永远是同一批题
+  split_seed: 42
+  # 建答案池：基座对每题贪心 1 次 + 采样 n_pool_samples 次
+  n_pool_samples: 8
+  pool_temperature: 0.8
+  pool_top_p: 0.95
+  # 数据构建走贪心，让"金标准"可复现
+  build_temperature: 0.0
+  build_top_p: 1.0
+  build_max_tokens: 1536
+  # rollout 采样：温度拉开多样性，给筛选留空间
+  rollout_temperature: 0.9
+  rollout_top_p: 0.95
+  rollout_max_tokens: 1536
+  # 改写生成参数
+  rewrite_temperature: 0.6
+  rewrite_top_p: 0.9
+  rewrite_max_tokens: 2048
+  # 分批攒样本的粒度。够了就停，最多多跑一批
+  gather_chunk: 48
+  # 洗牌种子。先洗牌再分批，早停拿到的才是随机代表子集而不是"前 N 条"
+  gather_seed: 42
+
+# ---------------------------------------------------------------------------
+# 选样门：σ-可分判据用几倍标准差。2 是主线，调高样本更干净但产出率掉得厉害
+# ---------------------------------------------------------------------------
+gates:
+  n_sigma: 2.0
+  # 判分 k 值三档，不许互相冒充
+  k_screen: 2     # 粗筛：不比原文干净就直接弃，省调用
+  k_select: 16    # 选样：套 σ 标定表的前提，低于 16 判据会偏松
+  k_eval: 3       # 整体评测：只求均值，小 k 够用
+  # 答案在池率地板。每个阶段评完对着它检查，跌破说明准确率塌了
+  in_pool_floor: 0.85
+
+train:
+  # LoRA 配置，四阶段共用
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: "q_proj k_proj v_proj o_proj gate_proj up_proj down_proj"
+  max_length: 4096
+  # 训练用哪几张卡，张数即 NPROC_PER_NODE
+  gpus: "0,1,2,3,4,5,6,7"
+  # DeepSpeed 配置名。zero3 把参数/梯度/优化器态都切到各卡上
+  deepspeed: "zero3"
+
+  sft:
+    # 冷启动：把"去检索腔"这种写法教进模型
+    target_samples: 700        # 2σ 桶攒够就停，不跑满全池
+    learning_rate: 5.0e-5
+    epochs: 7                  # 冷启动集在千条量级配 7 轮；样本量变了要按训练步数重新折算
+    per_device_batch_size: 1
+    gradient_accumulation: 8
+    eval_fraction: 0.10        # 从合格样本里确定性留出这一比例当验证集，绝不进训练桶
+    save_total_limit: 3
+
+  rft:
+    # 拒绝采样微调：模型自己采样、自己筛好的、再训自己
+    selfsample_k: 32           # 每题自采多少条候选
+    target_samples: 200
+    learning_rate: 3.0e-5
+    epochs: 3
+
+  dpo:
+    rollout_k: 16              # 每题采多少条候选来挑 chosen
+    target_pairs: 900
+    beta: 0.1                  # 偏离参考模型的惩罚强度，越大越保守
+    learning_rate: 5.0e-6
+    epochs: 2
+    gradient_accumulation: 2
+    # 在 DPO 损失上再加一份 chosen 的负对数似然，权重即此值。防止只学"拉开差距"却把 chosen 本身写崩
+    rpo_alpha: 1.0
+    save_steps: 5
+    save_total_limit: 8
+
+  grpo:
+    # 组内相对策略优化：一个 prompt 采 K 条，用组内相对好坏当优势
+    group_size: 8              # 每个 prompt 采几条。组越大优势估计越稳，显存和时间也越贵
+    temperature: 1.0
+    top_p: 0.95
+    max_completion_length: 1536
+    per_device_batch_size: 1
+    gradient_accumulation: 8
+    save_steps: 25
+    save_total_limit: 8
+    # 组内奖励标准化方式。group = 每组各自减均值除标准差
+    scale_rewards: "group"
+    # 两段课程式训练：先只用规则硬门稳住格式和答案，再接裁判做安全区内排序
+    warmup:
+      steps: 30
+      learning_rate: 7.0e-7
+      beta: 0.08               # KL 系数，warmup 阶段收得紧一点
+      reward_func: "rule_warmup"
+    online:
+      steps: 90
+      learning_rate: 7.0e-7
+      beta: 0.06
+      reward_func: "online"
+      judge_k: 2               # 在线判分打几遍。这里只做组内排序，不是选样，小 k 够用
+      judge_required: true     # true = 判分全失败就报错停，不静默降级成"只看规则"
+    # colocate 模式下训练进程和 vLLM 抢同一批卡，这组数是防 OOM 的五连关
+    vllm_gpu_util: 0.5
+    vllm_max_len: 6144
+    move_model_batches: 16
+    sleep_level: 1
+    offload_model: true
+    offload_optimizer: true
+
+reward:
+  # 在线奖励是词典序硬门，越靠前越不可补偿。下面是各档的分值
+  format_fail: -4.0            # 标签残缺 / think 太短
+  answer_out_of_pool: -3.0     # 答案漂出基座认可池
+  answer_not_comparable: -2.0  # 答案没有可比对的事实槽位，在线训练不能放过（会诱导模型少说话）
+  rule_fail_base: 0.50         # 规则查出检索腔，但答案合格
+  rule_fail_judge_weight: 0.20 # 这一档裁判分最多再加这么多
+  rule_pass_base: 1.00         # 规则也过了
+  rule_pass_judge_weight: 0.40
+  think_min_chars: 40          # think 短于这个字数按格式失败处理
+  think_max_chars: 2200        # 超出后按超出量线性扣分，封顶 0.6
+  strict_tags: true            # 要求 <think></think><answer></answer> 四个标签顺序严格正确
+
+eval:
+  # 评测报告里三件套的名字，改这里也要同步改 README
+  metrics: ["judge_clean_score", "rule_pass_rate", "answer_in_pool_rate"]
